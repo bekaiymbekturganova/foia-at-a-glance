@@ -1,0 +1,296 @@
+---
+title: "Federal FOIA at a glance"
+subtitle: "How U.S. agencies handle public records requests, FY2008–2025"
+format:
+  dashboard:
+    orientation: rows
+    scrolling: true
+jupyter: python3
+execute:
+  echo: false
+---
+
+# {.sidebar}
+
+```{ojs}
+viewof agency = Inputs.select(agencies, {label: "Agency", value: "All agencies"})
+```
+
+```{ojs}
+viewof year = Inputs.select(years.slice().reverse(), {label: "Year", value: years[years.length - 1], format: (y) => "FY" + y})
+```
+
+---
+
+**What is FOIA?** The Freedom of Information Act lets anyone ask a federal agency for its records. Every year each agency reports how many requests it got, how fast it answered and what it decided.
+
+**How to use this page.** Pick an agency and a year on the left. Each tab answers one question.
+
+**Data.** Annual reports from [foia.gov](https://www.foia.gov/foia-dataset-download.html), agency level. "All agencies" adds up every agency.
+
+```{python}
+# ---- Data prep: one CSV per fiscal year in data/, one row per agency ----
+from pathlib import Path
+import pandas as pd
+
+COLS = {
+    "requests__Number of Requests Received in Fiscal Year": "received",
+    "requests__Number of Requests Processed in Fiscal Year": "processed",
+    "backlog__Number of Backlogged Requests as of End of Fiscal Year": "backlog",
+    "response_time_all__Simple - Median Number of Days": "days_simple",
+    "response_time_all__Complex - Median Number of Days": "days_complex",
+    "disposition__Number of Full Grants": "full",
+    "disposition__Number of Partial Grants/Partial Denials": "partial",
+    "disposition__Number of Full Denials Based on Exemptions": "denied",
+    "disposition__Total": "decided",
+    "appeals_disposition__Number Affirmed on Appeal": "ap_kept",
+    "appeals_disposition__Number Partially Affirmed & Partially Reversed/Remanded on Appeal": "ap_partly",
+    "appeals_disposition__Number Completely Reversed/Remanded on Appeal": "ap_reversed",
+    'personnel__Total Number of "Full-Time FOIA Staff"': "staff",
+    "costs_fees__Total Costs": "cost",
+}
+
+def to_number(s):
+    s = s.astype(str).str.strip().str.replace(",", "", regex=False).str.replace("$", "", regex=False)
+    return pd.to_numeric(s.where(s != "<1", "0.5"), errors="coerce")
+
+frames = []
+for f in sorted(Path("data").glob("FY*.csv")):
+    d = pd.read_csv(f, dtype=str, keep_default_na=False)
+    keep = {c: n for c, n in COLS.items() if c in d.columns}
+    out = d[["Agency", "Fiscal Year"] + list(keep)].rename(columns={"Agency": "agency", "Fiscal Year": "year", **keep})
+    for n in COLS.values():
+        out[n] = to_number(out[n]) if n in out else float("nan")
+    out["year"] = out["year"].astype(int)
+    frames.append(out)
+df = pd.concat(frames, ignore_index=True)
+
+sums = [c for c in COLS.values() if not c.startswith("days_")]
+total = df.groupby("year")[sums].sum(min_count=1).reset_index()
+total["agency"] = "All agencies"
+df = pd.concat([total, df], ignore_index=True).sort_values(["agency", "year"])
+
+df["other"] = (df.decided - df.full - df.partial - df.denied).clip(lower=0)
+df["cost_per_request"] = df.cost / df.processed
+df["released_share"] = (df.full + df.partial) / df.decided
+appeals = df[["ap_kept", "ap_partly", "ap_reversed"]].sum(axis=1, min_count=3)
+df["appeal_changed"] = (df.ap_partly + df.ap_reversed) / appeals
+
+agencies = ["All agencies"] + sorted(a for a in df.agency.unique() if a != "All agencies")
+years = sorted(df.year.unique().tolist())
+ojs_define(rows=df.where(df.notna(), None), agencies=agencies, years=years)
+```
+
+```{ojs}
+//| output: false
+data = transpose(rows)
+```
+
+```{ojs}
+//| output: false
+sel = data.filter((d) => d.agency === agency)
+```
+
+```{ojs}
+//| output: false
+cur = sel.find((d) => d.year === year) ?? {}
+```
+
+```{ojs}
+//| output: false
+prev = sel.find((d) => d.year === year - 1) ?? {}
+```
+
+```{ojs}
+//| output: false
+blue = "#4582cc"
+```
+
+```{ojs}
+//| output: false
+gold = "#bb8624"
+```
+
+```{ojs}
+//| output: false
+big = (v) => v == null || isNaN(v) ? "—" : v >= 1e6 ? (v / 1e6).toFixed(1) + " million" : v >= 1e4 ? Math.round(v / 1e3) + " thousand" : d3.format(",")(Math.round(v))
+```
+
+```{ojs}
+//| output: false
+change = (a, b) => a == null || b == null || !b ? "" : (a >= b ? "up " : "down ") + Math.abs(Math.round((a / b - 1) * 100)) + "% from the year before"
+```
+
+# Requests
+
+## Row {height=25%}
+
+```{ojs}
+//| title: "Requests received"
+html`<div style="font-size:2.2rem">${big(cur.received)}</div><div class="text-muted">in FY${year}, ${change(cur.received, prev.received)}</div>`
+```
+
+```{ojs}
+//| title: "Requests answered"
+html`<div style="font-size:2.2rem">${big(cur.processed)}</div><div class="text-muted">in FY${year}, ${change(cur.processed, prev.processed)}</div>`
+```
+
+```{ojs}
+//| title: "Waiting too long (backlog)"
+html`<div style="font-size:2.2rem">${big(cur.backlog)}</div><div class="text-muted">still open past the legal deadline at the end of FY${year}</div>`
+```
+
+## Row
+
+```{ojs}
+//| title: "Are agencies keeping up?"
+html`<p class="text-muted">Blue is requests received, gold is requests answered. When blue is above gold, the pile of open requests grows.</p>
+${Plot.plot({
+  height: 300, marginLeft: 60,
+  x: {label: null, tickFormat: "d"},
+  y: {label: "Requests per year", grid: true, tickFormat: "~s"},
+  color: {legend: true, domain: ["Received", "Answered"], range: [blue, gold]},
+  marks: [
+    Plot.lineY(sel, {x: "year", y: "received", stroke: () => "Received", strokeWidth: 3}),
+    Plot.lineY(sel, {x: "year", y: "processed", stroke: () => "Answered", strokeWidth: 3}),
+    Plot.ruleY([0]),
+    Plot.tip(sel, Plot.pointerX({x: "year", y: "received", title: (d) => `FY${d.year}\nReceived: ${d3.format(",")(d.received)}\nAnswered: ${d3.format(",")(d.processed)}`}))
+  ]
+})}`
+```
+
+```{ojs}
+//| title: "Is the backlog growing?"
+html`<p class="text-muted">Requests still waiting past the 20-working-day deadline on the last day of each year.</p>
+${Plot.plot({
+  height: 300, marginLeft: 60,
+  x: {label: null, tickFormat: (d) => d % 5 === 0 ? String(d) : ""},
+  y: {label: "Backlogged requests", grid: true, tickFormat: "~s"},
+  marks: [Plot.barY(sel, {x: "year", y: "backlog", fill: (d) => d.year === year ? gold : blue, rx: 3, tip: true}), Plot.ruleY([0])]
+})}`
+```
+
+# Speed
+
+## Row
+
+```{ojs}
+//| title: "How long does an answer take?"
+agency === "All agencies"
+  ? html`<p>Pick one agency on the left to see its response times. The chart on the right compares agencies.</p>`
+  : html`<p class="text-muted">Median days to answer. Half of requests took less time, half took more. Simple requests are quick ones; complex ones need more searching or review.</p>
+${Plot.plot({
+  height: 300, marginLeft: 50,
+  x: {label: null, tickFormat: "d"},
+  y: {label: "Median days", grid: true},
+  color: {legend: true, domain: ["Simple", "Complex"], range: [blue, gold]},
+  marks: [
+    Plot.lineY(sel, {x: "year", y: "days_simple", stroke: () => "Simple", strokeWidth: 3, tip: true}),
+    Plot.lineY(sel, {x: "year", y: "days_complex", stroke: () => "Complex", strokeWidth: 3, tip: true}),
+    Plot.ruleY([0])
+  ]
+})}`
+```
+
+```{ojs}
+//| title: "Slowest agencies on complex requests"
+{
+  const top = data.filter((d) => d.year === year && d.agency !== "All agencies" && d.processed >= 1000 && d.days_complex != null)
+    .sort((a, b) => b.days_complex - a.days_complex).slice(0, 10);
+  return html`<p class="text-muted">FY${year}, agencies that answered at least 1,000 requests. Median days for a complex request.</p>
+  ${Plot.plot({
+    height: 320, marginLeft: 260, marginRight: 50,
+    x: {label: "Median days", grid: true},
+    y: {label: null, domain: top.map((d) => d.agency)},
+    marks: [
+      Plot.barX(top, {x: "days_complex", y: "agency", fill: (d) => d.agency === agency ? gold : blue, rx: 3, tip: true}),
+      Plot.text(top, {x: "days_complex", y: "agency", text: (d) => d3.format(",")(d.days_complex), dx: 6, textAnchor: "start"})
+    ]
+  })}`;
+}
+```
+
+# Outcomes
+
+## Row
+
+```{ojs}
+//| title: "What did people get?"
+{
+  const parts = [
+    {label: "All records released", n: cur.full, color: blue},
+    {label: "Some records released", n: cur.partial, color: gold},
+    {label: "Denied (exemption)", n: cur.denied, color: "#9d4038"},
+    {label: "Other (no records, withdrawn, referred…)", n: cur.other, color: "#b7b7b2"}
+  ];
+  const total = d3.sum(parts, (p) => p.n ?? 0);
+  if (!total) return html`<p>No data for this agency and year.</p>`;
+  parts.forEach((p) => p.share = (p.n ?? 0) / total);
+  return html`<p class="text-muted">How the ${d3.format(",")(total)} requests answered in FY${year} ended.</p>
+  ${Plot.plot({
+    height: 90, marginLeft: 10, marginRight: 10,
+    x: {percent: true, label: "Share of answered requests (%)"},
+    marks: [Plot.barX(parts, Plot.stackX({x: "share", fill: "color", title: (p) => `${p.label}: ${d3.format(".0%")(p.share)}`, tip: true}))]
+  })}
+  <ul style="list-style:none;padding:0;margin-top:1rem">
+    ${parts.map((p) => html`<li style="margin:6px 0"><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:${p.color};margin-right:8px"></span><b>${d3.format(".0%")(p.share)}</b> ${p.label}</li>`)}
+  </ul>`;
+}
+```
+
+```{ojs}
+//| title: "Over time: share released in full or in part"
+html`<p class="text-muted">A falling line means fewer people get records.</p>
+${Plot.plot({
+  height: 300, marginLeft: 50,
+  x: {label: null, tickFormat: "d"},
+  y: {label: "Share of answered requests (%)", percent: true, domain: [0, 100], grid: true},
+  marks: [
+    Plot.lineY(sel, {x: "year", y: "released_share", stroke: blue, strokeWidth: 3, tip: true}),
+    Plot.ruleY([0])
+  ]
+})}`
+```
+
+# Appeals & cost
+
+## Row {height=25%}
+
+```{ojs}
+//| title: "Appeals that changed the answer"
+html`<div style="font-size:2.2rem">${cur.appeal_changed == null ? "—" : Math.round(cur.appeal_changed * 100) + "%"}</div><div class="text-muted">of appeals decided in FY${year} were fully or partly reversed</div>`
+```
+
+```{ojs}
+//| title: "FOIA staff"
+html`<div style="font-size:2.2rem">${cur.staff == null ? "—" : d3.format(",.0f")(cur.staff)}</div><div class="text-muted">full-time staff in FY${year}</div>`
+```
+
+```{ojs}
+//| title: "Cost per answered request"
+html`<div style="font-size:2.2rem">${cur.cost_per_request == null ? "—" : "$" + d3.format(",.0f")(cur.cost_per_request)}</div><div class="text-muted">in FY${year} (total FOIA cost ÷ requests answered)</div>`
+```
+
+## Row
+
+```{ojs}
+//| title: "How often appeals change the answer"
+html`<p class="text-muted">If someone disagrees with an answer, they can appeal. This is the share of appeals where the agency changed its answer.</p>
+${Plot.plot({
+  height: 280, marginLeft: 50,
+  x: {label: null, tickFormat: "d"},
+  y: {label: "Changed on appeal (%)", percent: true, grid: true},
+  marks: [Plot.lineY(sel, {x: "year", y: "appeal_changed", stroke: blue, strokeWidth: 3, tip: true}), Plot.ruleY([0])]
+})}`
+```
+
+```{ojs}
+//| title: "Cost per answered request over time"
+html`<p class="text-muted">Dollars, not adjusted for inflation.</p>
+${Plot.plot({
+  height: 280, marginLeft: 50,
+  x: {label: null, tickFormat: "d"},
+  y: {label: "Dollars per request", grid: true},
+  marks: [Plot.lineY(sel, {x: "year", y: "cost_per_request", stroke: gold, strokeWidth: 3, tip: true}), Plot.ruleY([0])]
+})}`
+```
