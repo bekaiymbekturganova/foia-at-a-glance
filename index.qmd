@@ -5,6 +5,7 @@ format:
   dashboard:
     orientation: rows
     scrolling: true
+    embed-resources: true
 jupyter: python3
 execute:
   echo: false

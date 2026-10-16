@@ -1,5 +1,5 @@
 .quarto/
 *_files/
-index.html
+/index.html
 __pycache__/
 .ipynb_checkpoints/
